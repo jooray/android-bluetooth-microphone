@@ -6,7 +6,7 @@ phone's microphone. When it does reach the headset, the first two or three secon
 or the whole file is digital silence.
 
 This repository collects what it takes to get it right, learned the hard way while building
-[Third Ear](https://github.com/jooray/third-ear), I Hear You and
+[Third Ear](https://github.com/jooray/third-ear) and
 [Offline Speech to Text](https://zapstore.dev/apps/app.offlinespeechtotext):
 
 - why the Bluetooth microphone is a call microphone, and how to make Android hand it over

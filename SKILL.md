@@ -336,16 +336,30 @@ fun supportsFileApi(ctx: Context, c: ComponentName) = ctx.packageManager.queryIn
         .setData(Uri.parse("content://probe/audio")), 0,   // matches only with a content: Uri
 ).isNotEmpty()
 
+// The probe proves the action exists in the provider's package, not who published that package.
+// Any app can export a RecognitionService and the same activity under its own name; the probe
+// passes, and grantUriPermission below would hand your recording to it. So AUDIO_URI goes only
+// to the package you can hold responsible. Every other recognizer gets the caller-audio
+// contract (EXTRA_AUDIO_SOURCE), which hands over PCM instead of a grant. Optionally also pin
+// the signing certificate: read it from the APK you verified (apksigner verify --print-certs)
+// and compare PackageManager.GET_SIGNING_CERTIFICATES against that digest.
+fun trustsFileApi(ctx: Context, c: ComponentName) =
+    c.packageName == OSTT && supportsFileApi(ctx, c)
+
 /** Call on the main thread; [audio] is a content: Uri from your FileProvider. */
 fun transcribe(ctx: Context, c: ComponentName, audio: Uri, done: (Result<String>) -> Unit) {
     val r = SpeechRecognizer.createSpeechRecognizer(ctx, c)
+    val cleanup = {
+        ctx.revokeUriPermission(c.packageName, audio, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        r.destroy()
+    }
     r.setRecognitionListener(object : RecognitionListener {
         override fun onResults(b: Bundle?) {
-            r.destroy()
+            cleanup()
             val text = b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             done(if (text.isNullOrBlank()) Result.failure(Exception("no speech")) else Result.success(text))
         }
-        override fun onError(e: Int) { r.destroy(); done(Result.failure(Exception("error $e"))) }
+        override fun onError(e: Int) { cleanup(); done(Result.failure(Exception("error $e"))) }
         override fun onReadyForSpeech(p: Bundle?) {}; override fun onBeginningOfSpeech() {}
         override fun onRmsChanged(v: Float) {}; override fun onBufferReceived(b: ByteArray?) {}
         override fun onEndOfSpeech() {}; override fun onPartialResults(b: Bundle?) {}
@@ -365,9 +379,15 @@ What made it reliable in Third Ear:
 
 - **One job at a time.** OSTT answers a request it cannot take now with `ERROR_RECOGNIZER_BUSY`, `ERROR_AUDIO`, `ERROR_SERVER` or `ERROR_SERVER_DISCONNECTED` (for example while its keyboard dictates). Treat those as "busy" and retry with backoff for about 10 minutes; keep the recording and the job across process death. `ERROR_NO_MATCH` means it ran and heard no words: do not retry.
 - **A timeout that scales.** Inference runs above real time, but give it 3 minutes plus twice the recording's duration. A newer recognition request from another app can retire yours without any callback, so a missing answer counts as busy.
-- **Revoke the Uri grant** and `destroy()` the recognizer on every exit path.
-- **Run it from a foreground service** (or WorkManager with a foreground notification) so it survives the screen going off; `SpeechRecognizer` must be created and called on the main looper.
-- Save the transcript next to the audio (`note.m4a` + `note.txt`): searchable later and recoverable if the delivery step fails.
+- **Revoke the Uri grant** and `destroy()` the recognizer on every exit path (the `cleanup` above
+  covers the two callbacks; a caller-side timeout that gives up without any callback must call it
+  too, before it drops the job).
+- **Run it from a foreground service** (or WorkManager with a foreground notification) so it
+  survives the screen going off; `SpeechRecognizer` must be created and called on the main looper.
+- Save the transcript next to the audio (`note.m4a` + `note.txt`): searchable later and recoverable
+  if the delivery step fails. Keep them in app-internal storage and out of backups
+  (`android:dataExtractionRules`/`fullBackupContent` exclude or `allowBackup="false"`); shared
+  storage only through an explicit user share.
 
 ## Pitfalls
 

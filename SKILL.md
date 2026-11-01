@@ -140,6 +140,10 @@ fun openRecord(btInput: AudioDeviceInfo?): AudioRecord {
             .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build())
         .setBufferSizeInBytes(buf)
         .build()
+    // build() can also return an uninitialized instance (pitfall 15):
+    // check state before startRecording(), or the failure will look like a
+    // routing problem instead of an open problem.
+    check(rec.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord state=${rec.state}" }
     if (btInput != null) rec.setPreferredDevice(btInput)
     return rec
 }
@@ -385,6 +389,7 @@ What made it reliable in Third Ear:
 12. Do not forget `clearCommunicationDevice()`. If you leave it set, the headset stays in call mode and other apps' audio stays flat.
 13. Declare `WAKE_LOCK` if you take one. A microphone foreground service that keeps recording with the screen off often takes a partial wake lock; without `<uses-permission android:name="android.permission.WAKE_LOCK"/>` the `acquire()` throws a SecurityException ("Neither user … nor current process has android.permission.WAKE_LOCK") and kills the service at start, so every recording crashes, which looks like a Bluetooth bug when the user happened to use a headset. Declare it and wrap `acquire()` so a missing lock never ends a recording. (The audio HAL holds its own `AudioIn` wake lock for an active record client, so the read loop keeps running; your lock is for your encoder, UI updates and the work after the stop.)
 14. A stuck state exists. We once saw a headset advertise only the CONV context and the stack answer every RESUME_REQ with REQUEST_CANCELED for over 20 s. We never explained it. Fall back to the phone mic with an audible cue in that case.
+15. An AudioRecord can come back uninitialized. `build()` throws on incompatible parameters, but it can also return an instance in `STATE_UNINITIALIZED` when the hardware resources were not acquired - the class documentation says to check `getState()` after creation for exactly this reason. On such a stream, `startRecording()` and `read()` fail in ways that look like routing problems: you will blame the headset, the communication device or the HAL. Check the state right after `open` and treat it like any other open error, so it falls into the same one-shot fallback path (recipe 7).
 
 ## Background recording (headset button, screen off)
 
